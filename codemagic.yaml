@@ -94,6 +94,10 @@ workflows:
         script: |
           npx cap add ios
           node scripts/postadd.js
+          # Apple requires a minimum iOS version of 15 or later.
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/App/App.xcodeproj/project.pbxproj
+          sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile
+          grep -n "IPHONEOS_DEPLOYMENT_TARGET\|platform :ios" ios/App/App.xcodeproj/project.pbxproj ios/App/Podfile
           npx capacitor-assets generate --ios
           npx cap sync ios
       - name: Apply signing
