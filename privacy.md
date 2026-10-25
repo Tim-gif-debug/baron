@@ -8,5 +8,5 @@ This game does not collect, store, or transmit any personal data.
 - Your saved progress and best scores are stored only on your device (local storage inside the app). Deleting the app deletes them.
 - The game does not use the camera, microphone, location, contacts, or any other device sensors.
 
-Contact: [your email address]
-Last updated: [date]
+Contact:Comicbookhistorians@gmail.com
+Date:October 24, 2026
