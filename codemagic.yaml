@@ -113,13 +113,74 @@ workflows:
             --certificate-key=@file:"$KEY"
           keychain initialize
           keychain add-certificates
-          xcode-project use-profiles
+          xcode-project use-profiles --project ios/App/App.xcodeproj || true
+          # Belt and braces: pin the App Store profile onto the App target by hand,
+          # so the archive never has to guess which profile to use.
+          PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          ls -la "$PP_DIR"
+          PROFILE=""
+          for f in "$PP_DIR"/*.mobileprovision; do
+            security cms -D -i "$f" > /tmp/pp.plist
+            APPID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /tmp/pp.plist)
+            case "$APPID" in
+              *".$BUNDLE_ID")
+                if ! /usr/libexec/PlistBuddy -c "Print :ProvisionedDevices" /tmp/pp.plist >/dev/null 2>&1; then
+                  PROFILE="$f"; break
+                fi;;
+            esac
+          done
+          if [ -z "$PROFILE" ]; then echo "No App Store profile for $BUNDLE_ID was downloaded"; exit 1; fi
+          PP_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" /tmp/pp.plist)
+          PP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/pp.plist)
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" /tmp/pp.plist)
+          echo "Using profile: $PP_NAME ($PP_UUID) team $TEAM_ID"
+          PBX=ios/App/App.xcodeproj/project.pbxproj
+          cat > scripts/pinprofile.js <<'EOF_PIN'
+          // Pins a provisioning profile onto every build configuration whose bundle id matches.
+          const fs = require('fs');
+          const [pbx, bid, team, name, uuid] = process.argv.slice(2);
+          let s = fs.readFileSync(pbx, 'utf8');
+          const drop = ['CODE_SIGN_STYLE', 'CODE_SIGN_IDENTITY', '"CODE_SIGN_IDENTITY[sdk=iphoneos*]"', 'DEVELOPMENT_TEAM', 'PROVISIONING_PROFILE_SPECIFIER', 'PROVISIONING_PROFILE'];
+          let count = 0;
+          s = s.replace(/buildSettings = \{([\s\S]*?)\n(\t*)\};/g, (m, body, ind) => {
+            if (!body.includes('PRODUCT_BUNDLE_IDENTIFIER = ' + bid)) return m;
+            const lines = body.split('\n').filter(l => !drop.some(k => l.trim().startsWith(k + ' =')));
+            const add = [
+              'CODE_SIGN_STYLE = Manual;',
+              'CODE_SIGN_IDENTITY = "Apple Distribution";',
+              '"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";',
+              'DEVELOPMENT_TEAM = ' + team + ';',
+              'PROVISIONING_PROFILE_SPECIFIER = "' + name + '";',
+              'PROVISIONING_PROFILE = "' + uuid + '";',
+            ].map(l => ind + '\t' + l);
+            count++;
+            return 'buildSettings = {' + lines.join('\n') + '\n' + add.join('\n') + '\n' + ind + '};';
+          });
+          fs.writeFileSync(pbx, s);
+          console.log('Pinned profile on ' + count + ' build configuration(s).');
+          if (!count) process.exit(1);
+          EOF_PIN
+          node scripts/pinprofile.js "$PBX" "$BUNDLE_ID" "$TEAM_ID" "$PP_NAME" "$PP_UUID"
+          grep -n "CODE_SIGN_STYLE\|DEVELOPMENT_TEAM\|PROVISIONING_PROFILE\|PRODUCT_BUNDLE_IDENTIFIER" "$PBX"
+          cat > "$HOME/export_options.plist" <<EOF_EO
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>uploadSymbols</key><true/>
+            <key>provisioningProfiles</key><dict>
+              <key>$BUNDLE_ID</key><string>$PP_NAME</string>
+            </dict>
+          </dict></plist>
+          EOF_EO
       - name: Set build number
         script: |
           cd ios/App
           agvtool new-version -all $BUILD_NUMBER
       - name: Build
-        script: xcode-project build-ipa --workspace ios/App/App.xcworkspace --scheme App
+        script: xcode-project build-ipa --workspace ios/App/App.xcworkspace --scheme App --export-options-plist "$HOME/export_options.plist"
     cache:
       cache_paths:
         - $HOME/signkey
