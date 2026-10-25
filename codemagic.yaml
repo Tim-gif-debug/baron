@@ -98,6 +98,7 @@ workflows:
           npx cap sync ios
       - name: Apply signing
         script: |
+          set -e
           # The build makes its own signing certificate and App Store profile with
           # the App Store Connect API key, so nothing has to be uploaded by hand.
           # The private key is kept in the build cache so the same certificate is
@@ -105,26 +106,37 @@ workflows:
           mkdir -p "$HOME/signkey"
           KEY="$HOME/signkey/ios_distribution_private_key"
           if [ ! -f "$KEY" ]; then
+            echo "No cached signing key yet, making one"
             ssh-keygen -t rsa -b 2048 -m PEM -f "$KEY" -q -N ""
           fi
-          # Apple allows only a few Distribution certificates. If none of them was
-          # made from our cached key, clear the old ones so a fresh one can be made.
-          MATCH=$(app-store-connect certificates list --type DISTRIBUTION --certificate-key=@file:"$KEY" --json 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' || echo 0)
-          echo "Distribution certificates matching the cached key: $MATCH"
+          echo "Distribution certificates on the Apple account right now:"
+          app-store-connect certificates list --type DISTRIBUTION IOS_DISTRIBUTION || true
+          MATCH=$(app-store-connect certificates list --type DISTRIBUTION IOS_DISTRIBUTION --certificate-key=@file:"$KEY" --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' || echo 0)
+          echo "Certificates made from the cached key: $MATCH"
           if [ "$MATCH" = "0" ]; then
-            for id in $(app-store-connect certificates list --type DISTRIBUTION --json 2>/dev/null | python3 -c 'import json,sys; [print(c["id"]) for c in json.load(sys.stdin)]'); do
-              echo "Removing old distribution certificate $id"
-              app-store-connect certificates delete "$id" --ignore-not-found || true
+            echo "Apple allows only a few Distribution certificates, so old ones are removed to make room."
+            IDS=$(app-store-connect certificates list --type DISTRIBUTION IOS_DISTRIBUTION --json | python3 -c 'import json,sys; [print(c["id"]) for c in json.load(sys.stdin)]' || true)
+            for id in $IDS; do
+              echo "Removing certificate $id"
+              app-store-connect certificates delete "$id" --ignore-not-found || echo "Could not remove $id (the API key may lack permission)"
             done
-            for id in $(app-store-connect profiles list --type IOS_APP_STORE --json 2>/dev/null | python3 -c 'import json,sys; [print(p["id"]) for p in json.load(sys.stdin) if p.get("attributes",{}).get("profileState")!="ACTIVE"]'); do
+            PIDS=$(app-store-connect profiles list --type IOS_APP_STORE --json | python3 -c 'import json,sys; [print(p["id"]) for p in json.load(sys.stdin) if p.get("attributes",{}).get("profileState")!="ACTIVE"]' || true)
+            for id in $PIDS; do
               echo "Removing invalid profile $id"
               app-store-connect profiles delete "$id" --ignore-not-found || true
             done
           fi
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+          if ! app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create \
-            --certificate-key=@file:"$KEY"
+            --certificate-key=@file:"$KEY"; then
+            echo ""
+            echo "Could not create the certificate or profile."
+            echo "If Apple said you already have a current Distribution certificate, open"
+            echo "https://developer.apple.com/account/resources/certificates/list and revoke the"
+            echo "Distribution certificates, then start the build again."
+            exit 1
+          fi
           keychain initialize
           keychain add-certificates
           xcode-project use-profiles --project ios/App/App.xcodeproj || true
