@@ -1,0 +1,20 @@
+{
+  "appId": "com.comicbookhistorians.baronvexington",
+  "appName": "Baron Vexington’s Tower",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "never",
+    "scrollEnabled": false,
+    "allowsLinkPreview": false,
+    "backgroundColor": "#2a1b38",
+    "preferredContentMode": "mobile"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "launchShowDuration": 800,
+      "backgroundColor": "#2a1b38",
+      "showSpinner": false
+    }
+  }
+}

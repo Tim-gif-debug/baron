@@ -1,0 +1,112 @@
+# Cloud build for the App Store. Everything the build needs is created from the
+# five files at the top of this repository: index.html, icon.png, splash.png,
+# package.json, capacitor.config.json. Setup steps are in README-WINDOWS.md.
+workflows:
+  ios-app-store:
+    name: iOS App Store build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.comicbookhistorians.baronvexington
+      node: 20
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Arrange files
+        script: |
+          mkdir -p www assets scripts
+          cp index.html www/index.html
+          cp icon.png assets/icon.png
+          cp splash.png assets/splash.png
+          cp splash.png assets/splash-dark.png
+          cat > scripts/postadd.js <<'EOF_JS'
+          // Runs once after `npx cap add ios`. Patches Info.plist with the settings
+          // App Store review expects, and drops in the privacy manifest.
+          // Uses a small plist parser so arrays and booleans are replaced cleanly.
+          const fs = require('fs'), path = require('path');
+          const plistPath = path.join(__dirname, '..', 'ios', 'App', 'App', 'Info.plist');
+          let src = fs.readFileSync(plistPath, 'utf8');
+
+          // --- parse the top-level <dict> into an ordered list of [key, valueXml] ---
+          const start = src.indexOf('<dict>') + 6, end = src.lastIndexOf('</dict>');
+          const body = src.slice(start, end);
+          const entries = [];
+          const tagRe = /<key>([^<]*)<\/key>\s*/g;
+          let m;
+          const positions = [];
+          while ((m = tagRe.exec(body))) positions.push({ key: m[1], valStart: m.index + m[0].length, keyStart: m.index });
+          for (let i = 0; i < positions.length; i++) {
+            const valEnd = i + 1 < positions.length ? positions[i + 1].keyStart : body.length;
+            entries.push([positions[i].key, body.slice(positions[i].valStart, valEnd).trim()]);
+          }
+          function set(key, valueXml) {
+            const e = entries.find(x => x[0] === key);
+            if (e) e[1] = valueXml; else entries.push([key, valueXml]);
+          }
+          const landscape = '<array>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>';
+          set('CFBundleDisplayName', '<string>Baron Vexington’s Tower</string>');
+          set('UISupportedInterfaceOrientations', landscape);
+          set('UISupportedInterfaceOrientations~ipad', landscape);
+          set('UIRequiresFullScreen', '<true/>');
+          set('UIStatusBarHidden', '<true/>');
+          set('UIViewControllerBasedStatusBarAppearance', '<false/>');
+          set('ITSAppUsesNonExemptEncryption', '<false/>');
+          set('LSApplicationCategoryType', '<string>public.app-category.games</string>');
+          set('UIDeviceFamily', '<array>\n\t\t<integer>1</integer>\n\t\t<integer>2</integer>\n\t</array>');
+          const out = src.slice(0, start) + '\n' + entries.map(([k, v]) => '\t<key>' + k + '</key>\n\t' + v).join('\n') + '\n' + src.slice(end);
+          fs.writeFileSync(plistPath, out);
+          fs.copyFileSync(path.join(__dirname, 'PrivacyInfo.xcprivacy'), path.join(__dirname, '..', 'ios', 'App', 'App', 'PrivacyInfo.xcprivacy'));
+          console.log('Info.plist patched: landscape only, full screen, status bar hidden, no non-exempt encryption, privacy manifest added.');
+          console.log('If Xcode does not show PrivacyInfo.xcprivacy under App, drag ios/App/App/PrivacyInfo.xcprivacy into the App group once (tick "Copy items if needed" off).');
+          EOF_JS
+          cat > scripts/PrivacyInfo.xcprivacy <<'EOF_PL'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>NSPrivacyTracking</key>
+          	<false/>
+          	<key>NSPrivacyTrackingDomains</key>
+          	<array/>
+          	<key>NSPrivacyCollectedDataTypes</key>
+          	<array/>
+          	<key>NSPrivacyAccessedAPITypes</key>
+          	<array>
+          		<dict>
+          			<key>NSPrivacyAccessedAPIType</key>
+          			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+          			<key>NSPrivacyAccessedAPITypeReasons</key>
+          			<array>
+          				<string>CA92.1</string>
+          			</array>
+          		</dict>
+          	</array>
+          </dict>
+          </plist>
+          EOF_PL
+      - name: Install dependencies
+        script: npm install
+      - name: Create the iOS project
+        script: |
+          npx cap add ios
+          node scripts/postadd.js
+          npx capacitor-assets generate --ios
+          npx cap sync ios
+      - name: Apply signing
+        script: xcode-project use-profiles
+      - name: Set build number
+        script: |
+          cd ios/App
+          agvtool new-version -all $BUILD_NUMBER
+      - name: Build
+        script: xcode-project build-ipa --workspace ios/App/App.xcworkspace --scheme App
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
