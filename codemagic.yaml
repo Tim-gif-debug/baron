@@ -9,9 +9,8 @@ workflows:
     integrations:
       app_store_connect: codemagic
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.comicbookhistorians.baronvexington
+      vars:
+        BUNDLE_ID: com.comicbookhistorians.baronvexington
       node: 20
       xcode: latest
       cocoapods: default
@@ -97,13 +96,32 @@ workflows:
           npx capacitor-assets generate --ios
           npx cap sync ios
       - name: Apply signing
-        script: xcode-project use-profiles
+        script: |
+          # The build makes its own signing certificate and App Store profile with
+          # the App Store Connect API key, so nothing has to be uploaded by hand.
+          # The private key is kept in the build cache so the same certificate is
+          # reused on later builds instead of creating a new one each time.
+          mkdir -p "$HOME/signkey"
+          KEY="$HOME/signkey/ios_distribution_private_key"
+          if [ ! -f "$KEY" ]; then
+            ssh-keygen -t rsa -b 2048 -m PEM -f "$KEY" -q -N ""
+          fi
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create \
+            --certificate-key=@file:"$KEY"
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
       - name: Set build number
         script: |
           cd ios/App
           agvtool new-version -all $BUILD_NUMBER
       - name: Build
         script: xcode-project build-ipa --workspace ios/App/App.xcworkspace --scheme App
+    cache:
+      cache_paths:
+        - $HOME/signkey
     artifacts:
       - build/ios/ipa/*.ipa
     publishing:
